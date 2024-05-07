@@ -10,19 +10,25 @@
 //
 //===----------------------------------------------------------------------===//
 
+import struct Basics.AbsolutePath
+
 extension BuildParameters {
     /// Build parameters related to output and logging grouped in a single type to aggregate those in one place.
     public struct Output: Encodable {
         public init(
             isColorized: Bool = false,
-            isVerbose: Bool = false
+            isVerbose: Bool = false,
+            traceFile: AbsolutePath? = nil
         ) {
             self.isColorized = isColorized
             self.isVerbose = isVerbose
+            self.traceFile = traceFile
         }
 
         public var isColorized: Bool
 
         public var isVerbose: Bool
+
+        public var traceFile: AbsolutePath?
     }
 }

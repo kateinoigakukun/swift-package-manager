@@ -249,6 +249,8 @@ package final class SwiftCommandState {
     /// The min severity at which to log diagnostics
     package let logLevel: Basics.Diagnostic.Severity
 
+    package let buildTraceFile: AbsolutePath?
+
     // should use sandbox on external subcommands
     package var shouldDisableSandbox: Bool
 
@@ -299,6 +301,7 @@ package final class SwiftCommandState {
         self.fileSystem = localFileSystem
         // first, bootstrap the observability system
         self.logLevel = options.logging.logLevel
+        self.buildTraceFile = options.logging.traceFile
         self.observabilityHandler = SwiftCommandObservabilityHandler(outputStream: outputStream, logLevel: self.logLevel)
         let observabilitySystem = ObservabilitySystem(self.observabilityHandler)
         self.observabilityScope = observabilitySystem.topScope
@@ -776,7 +779,8 @@ package final class SwiftCommandState {
                 shouldDisableLocalRpath: options.linker.shouldDisableLocalRpath
             ),
             outputParameters: .init(
-                isVerbose: self.logLevel <= .info
+                isVerbose: self.logLevel <= .info,
+                traceFile: self.buildTraceFile
             ),
             testingParameters: .init(
                 configuration: options.build.configuration,

@@ -188,6 +188,14 @@ package struct LoggingOptions: ParsableArguments {
     /// Whether logging output should be limited to `.error`.
     @Flag(name: .shortAndLong, help: "Decrease verbosity to only include error output.")
     package var quiet: Bool = false
+
+    /// Path to the build trace file.
+    @Option(
+        name: .customLong("trace"),
+        help: "Write a build trace to the given path",
+        completion: .file()
+    )
+    package var traceFile: AbsolutePath?
 }
 
 package struct SecurityOptions: ParsableArguments {

@@ -728,6 +728,7 @@ package final class BuildOperation: PackageStructureDelegate, SPMBuildCore.Build
             buildFile: self.productsBuildParameters.llbuildManifest.pathString,
             databaseFile: databasePath,
             delegate: buildSystemDelegate,
+            traceFile: self.productsBuildParameters.outputParameters.traceFile?.pathString,
             schedulerLanes: self.productsBuildParameters.workers
         )
 
