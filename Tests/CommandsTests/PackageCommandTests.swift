@@ -21,8 +21,10 @@ import Workspace
 import _InternalTestSupport
 
 import class Basics.AsyncProcess
+import struct SPMBuildCore.BuiltTestProduct
 import struct SPMBuildCore.BuildSystemProvider
 import typealias SPMBuildCore.CLIArguments
+import struct SPMBuildCore.PluginInvocationBuildResult
 import class TSCBasic.BufferedOutputByteStream
 import struct TSCBasic.ByteString
 import enum TSCBasic.JSON
@@ -7202,6 +7204,46 @@ struct PackageCommandTests {
             }
         }
 
+        @Test
+        func commandPluginBuildArtifactsUseBuiltTestProductsForUmbrellaTestProduct() throws {
+            let builtTestProducts = [
+                BuiltTestProduct(
+                    productName: "LibTests",
+                    umbrellaProductName: "MyPackagePackageTests",
+                    binaryPath: try AbsolutePath(validating: "/tmp/build/LibTests-test-runner.wasm"),
+                    packagePath: try AbsolutePath(validating: "/tmp/MyPackage"),
+                    testEntryPointPath: nil
+                ),
+                BuiltTestProduct(
+                    productName: "OtherTests",
+                    umbrellaProductName: "OtherPackageTests",
+                    binaryPath: try AbsolutePath(validating: "/tmp/build/OtherTests-test-runner.wasm"),
+                    packagePath: try AbsolutePath(validating: "/tmp/MyPackage"),
+                    testEntryPointPath: nil
+                ),
+            ]
+
+            let artifacts = PluginDelegate.builtArtifacts(
+                from: [],
+                builtTestProducts: builtTestProducts,
+                matching: .product("MyPackagePackageTests")
+            )
+
+            #expect(artifacts.map(\.path) == ["/tmp/build/LibTests-test-runner.wasm"])
+            #expect(artifacts.map(\.kind) == [.executable])
+
+            let directArtifact = PluginInvocationBuildResult.BuiltArtifact(
+                path: "/tmp/build/MyPackagePackageTests.wasm",
+                kind: .executable
+            )
+            let directArtifacts = PluginDelegate.builtArtifacts(
+                from: [("MyPackagePackageTests", directArtifact)],
+                builtTestProducts: builtTestProducts,
+                matching: .product("MyPackagePackageTests")
+            )
+            #expect(directArtifacts.map(\.path) == ["/tmp/build/MyPackagePackageTests.wasm"])
+        }
+
         @Test(
             .requiresSwiftConcurrencySupport,
             // Depending on how the test is running, the `llvm-profdata` and `llvm-cov` tool might be unavailable.
@@ -7638,6 +7680,109 @@ struct PackageCommandTests {
             }
             } when: {
                 ProcessInfo.hostOperatingSystem == .windows
+            }
+        }
+
+        @Test(
+            .requiresSwiftConcurrencySupport,
+            .tags(
+                .Feature.Command.Package.Plugin,
+            ),
+            arguments: getBuildData(for: SupportedBuildSystemOnAllPlatforms),
+        )
+        func commandPluginPackageProductsExcludeImplicitPluginTools(
+            data: BuildData
+        ) async throws {
+            try await testWithTemporaryDirectory { tmpPath in
+                let packageDir = tmpPath.appending(components: "MyPackage")
+                try localFileSystem.createDirectory(packageDir, recursive: true)
+                try localFileSystem.writeFileContents(
+                    packageDir.appending(components: "Package.swift"),
+                    string: """
+                        // swift-tools-version: 5.9
+                        import PackageDescription
+                        let package = Package(
+                            name: "MyPackage",
+                            targets: [
+                                .executableTarget(name: "App"),
+                                .executableTarget(name: "PluginTool"),
+                                .plugin(
+                                    name: "InspectProducts",
+                                    capability: .command(
+                                        intent: .custom(verb: "inspect-products", description: "Inspect package products")
+                                    )
+                                ),
+                                .plugin(
+                                    name: "ToolConsumer",
+                                    capability: .buildTool(),
+                                    dependencies: ["PluginTool"]
+                                ),
+                            ]
+                        )
+                        """
+                )
+
+                let appTargetDir = packageDir.appending(components: "Sources", "App")
+                try localFileSystem.createDirectory(appTargetDir, recursive: true)
+                try localFileSystem.writeFileContents(
+                    appTargetDir.appending("main.swift"),
+                    string: """
+                        print("app")
+                        """
+                )
+
+                let pluginToolTargetDir = packageDir.appending(components: "Sources", "PluginTool")
+                try localFileSystem.createDirectory(pluginToolTargetDir, recursive: true)
+                try localFileSystem.writeFileContents(
+                    pluginToolTargetDir.appending("main.swift"),
+                    string: """
+                        print("plugin tool")
+                        """
+                )
+
+                let inspectProductsPluginDir = packageDir.appending(components: "Plugins", "InspectProducts")
+                try localFileSystem.createDirectory(inspectProductsPluginDir, recursive: true)
+                try localFileSystem.writeFileContents(
+                    inspectProductsPluginDir.appending("plugin.swift"),
+                    string: """
+                        import PackagePlugin
+
+                        @main
+                        struct InspectProducts: CommandPlugin {
+                            func performCommand(context: PluginContext, arguments: [String]) throws {
+                                let executableProducts = context.package
+                                    .products(ofType: ExecutableProduct.self)
+                                    .map(\\.name)
+                                    .sorted()
+                                print("execProducts: \\(executableProducts)")
+                            }
+                        }
+                        """
+                )
+
+                let toolConsumerPluginDir = packageDir.appending(components: "Plugins", "ToolConsumer")
+                try localFileSystem.createDirectory(toolConsumerPluginDir, recursive: true)
+                try localFileSystem.writeFileContents(
+                    toolConsumerPluginDir.appending("plugin.swift"),
+                    string: """
+                        import PackagePlugin
+
+                        @main
+                        struct ToolConsumer: BuildToolPlugin {
+                            func createBuildCommands(context: PluginContext, target: Target) throws -> [Command] {
+                                []
+                            }
+                        }
+                        """
+                )
+
+                let (stdout, _) = try await execute(
+                    ["inspect-products"],
+                    packagePath: packageDir,
+                    configuration: data.config,
+                    buildSystem: data.buildSystem,
+                )
+                #expect(stdout.contains(#"execProducts: ["App"]"#))
             }
         }
 

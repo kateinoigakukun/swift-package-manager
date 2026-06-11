@@ -473,7 +473,18 @@ public final class SwiftBuildSystem: SPMBuildCore.BuildSystem {
         return try await startSWBuildOperation(
             pifTargetName: subset.pifTargetName,
             buildOutputs: buildOutputs,
+            builtArtifactTargetIDsToExclude: try await self.builtArtifactTargetIDsToExclude(for: subset),
         )
+    }
+
+    private func builtArtifactTargetIDsToExclude(for subset: BuildSubset) async throws -> Set<GUID> {
+        switch subset {
+        case .allExcludingTests, .allIncludingTests:
+            let graph = try await getPackageGraph()
+            return Set(graph.packages.flatMap(\.implicitExecutablePluginToolProductIDs))
+        case .product, .target:
+            return []
+        }
     }
 
     /// Compiles any plugins specified or implied by the build subset, returning
@@ -619,7 +630,8 @@ public final class SwiftBuildSystem: SPMBuildCore.BuildSystem {
 
     private func startSWBuildOperation(
         pifTargetName: String,
-        buildOutputs: [BuildOutput]
+        buildOutputs: [BuildOutput],
+        builtArtifactTargetIDsToExclude: Set<GUID>
     ) async throws -> BuildResult {
         let buildStartTime = ContinuousClock.Instant.now
         var symbolGraphOptions: BuildOutput.SymbolGraphOptions?
@@ -753,31 +765,11 @@ public final class SwiftBuildSystem: SPMBuildCore.BuildSystem {
                     if buildOutputs.contains(.builtArtifacts) {
                         if let buildDescriptionID {
                             let targetInfo = try await session.configuredTargets(buildDescription: buildDescriptionID, buildRequest: request)
-                            artifacts = targetInfo.compactMap { target in
-                                guard let artifactInfo = target.artifactInfo else {
-                                    return nil
-                                }
-                                let kind: PluginInvocationBuildResult.BuiltArtifact.Kind = switch artifactInfo.kind {
-                                case .executable:
-                                    .executable
-                                case .staticLibrary:
-                                    .staticLibrary
-                                case .dynamicLibrary:
-                                    .dynamicLibrary
-                                case .framework:
-                                    // We treat frameworks as dylibs here, but the plugin API should grow to accomodate more product types
-                                    .dynamicLibrary
-                                }
-                                var name = target.name
-                                // FIXME: We need a better way to map between SwiftPM target/product names and PIF target names
-                                if pifTargetName.hasSuffix("-product") {
-                                    name = String(name.dropLast(8))
-                                }
-                                return (name, .init(
-                                    path: artifactInfo.path,
-                                    kind: kind
-                                ))
-                            }
+                            artifacts = Self.builtArtifacts(
+                                from: targetInfo,
+                                pifTargetName: pifTargetName,
+                                excludingTargetIDs: builtArtifactTargetIDsToExclude
+                            )
                         } else {
                             self.observabilityScope.emit(error: "failed to compute built artifacts list")
                         }
@@ -807,6 +799,39 @@ public final class SwiftBuildSystem: SPMBuildCore.BuildSystem {
                 builtArtifacts: artifacts,
                 dependencyGraph: dependencyGraph
             )
+        }
+    }
+
+    package static func builtArtifacts(
+        from targetInfo: [SWBConfiguredTargetInfo],
+        pifTargetName: String,
+        excludingTargetIDs: Set<GUID>
+    ) -> [(String, PluginInvocationBuildResult.BuiltArtifact)] {
+        targetInfo.compactMap { target in
+            guard !excludingTargetIDs.contains(GUID(target.identifier.targetGUID.rawValue)),
+                  let artifactInfo = target.artifactInfo else {
+                return nil
+            }
+            let kind: PluginInvocationBuildResult.BuiltArtifact.Kind = switch artifactInfo.kind {
+            case .executable:
+                .executable
+            case .staticLibrary:
+                .staticLibrary
+            case .dynamicLibrary:
+                .dynamicLibrary
+            case .framework:
+                // We treat frameworks as dylibs here, but the plugin API should grow to accomodate more product types
+                .dynamicLibrary
+            }
+            var name = target.name
+            // FIXME: We need a better way to map between SwiftPM target/product names and PIF target names
+            if pifTargetName.hasSuffix("-product") {
+                name = String(name.dropLast(8))
+            }
+            return (name, .init(
+                path: artifactInfo.path,
+                kind: kind
+            ))
         }
     }
 
@@ -950,7 +975,7 @@ public final class SwiftBuildSystem: SPMBuildCore.BuildSystem {
         }
 
         if !buildParameters.customToolsetPaths.isEmpty {
-            settings["SWIFT_SDK_TOOLSETS"] =
+            settings["SWIFT_SDK_TOOLSETS[__destination_platform=YES]"] =
                 (["$(inherited)"] + buildParameters.customToolsetPaths.map { $0.pathStringWithPosixSlashes })
                 .joined(separator: " ")
         }

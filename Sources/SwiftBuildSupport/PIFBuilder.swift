@@ -785,6 +785,10 @@ fileprivate func buildAggregatePIFProject(
     aggregateProject.addBuildConfig { id in BuildConfig(id: id, name: "Debug", settings: settings) }
     aggregateProject.addBuildConfig { id in BuildConfig(id: id, name: "Release", settings: settings) }
 
+    let implicitExecutablePluginToolProductIDs = Set(packagesAndProjects.flatMap {
+        $0.package.implicitExecutablePluginToolProductIDs
+    })
+
     func addEmptyBuildConfig(
         to targetKeyPath: WritableKeyPath<ProjectModel.Project, ProjectModel.AggregateTarget>,
         name: String
@@ -836,7 +840,10 @@ fileprivate func buildAggregatePIFProject(
                     platformFilters: [],
                     linkProduct: false
                 )
-                if ![.unitTest, .swiftpmTestRunner].contains(target.productType) {
+                if ![.unitTest, .swiftpmTestRunner].contains(target.productType) &&
+                    !target.id.hasSuffix(.testable) &&
+                    !implicitExecutablePluginToolProductIDs.contains(target.id)
+                {
                     aggregateProject[keyPath: allExcludingTestsTargetKeyPath].common.addDependency(
                         on: target.id,
                         platformFilters: [],

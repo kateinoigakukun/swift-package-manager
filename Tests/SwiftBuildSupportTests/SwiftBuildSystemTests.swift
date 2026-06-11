@@ -26,6 +26,7 @@ import PackageLoading
 import SWBBuildService
 
 import _InternalTestSupport
+import SWBUtil
 
 func withInstantiatedSwiftBuildSystem(
     fromFixture fixtureName: String,
@@ -476,6 +477,78 @@ struct SwiftBuildSystemTests {
                 #expect(buildRequest.parameters.overrides.synthesized?.table["OTHER_SWIFT_FLAGS"]?.contains("-Xcc -DFoo") == true)
             }
         }
+    }
+
+    @Test
+    func customToolsetsApplyOnlyToDestinationPlatform() async throws {
+        var parameters = mockBuildParameters(
+            destination: .target,
+            buildSystemKind: .swiftbuild,
+            triple: .arm64Linux
+        )
+        let toolsetPath = AbsolutePath("/tmp/target-toolset.json")
+        parameters.customToolsetPaths = [toolsetPath]
+
+        try await withInstantiatedSwiftBuildSystem(
+            fromFixture: "PIFBuilder/Simple",
+            buildParameters: parameters,
+        ) { swiftBuild, service, session, observabilityScope, buildParameters in
+            let buildSettings = try await swiftBuild.makeBuildParameters(
+                service: service,
+                session: session,
+                symbolGraphOptions: nil,
+                setToolchainSetting: false
+            )
+
+            let synthesizedArgs = try #require(buildSettings.overrides.synthesized)
+            #expect(synthesizedArgs.table["SWIFT_SDK_TOOLSETS"] == nil)
+            #expect(
+                synthesizedArgs.table["SWIFT_SDK_TOOLSETS[__destination_platform=YES]"] ==
+                "$(inherited) \(toolsetPath.pathStringWithPosixSlashes)"
+            )
+        }
+    }
+
+    @Test
+    func builtArtifactsExcludeImplicitPluginToolsOnlyForAggregateBuilds() throws {
+        let pluginToolID = GUID("PACKAGE-PRODUCT:root_PluginTool.PluginTool")
+        let appID = GUID("PACKAGE-PRODUCT:root_App.App")
+        let pluginToolTarget = SWBConfiguredTargetInfo(
+            identifier: SWBConfiguredTargetIdentifier(
+                rawGUID: "\(pluginToolID.value)-configured",
+                targetGUID: SWBTargetGUID(rawValue: pluginToolID.value)
+            ),
+            name: "PluginTool-product",
+            dependencies: [],
+            toolchain: nil,
+            artifactInfo: SWBArtifactInfo(ArtifactInfo(kind: .executable, path: Path("/tmp/PluginTool")))
+        )
+        let appTarget = SWBConfiguredTargetInfo(
+            identifier: SWBConfiguredTargetIdentifier(
+                rawGUID: "\(appID.value)-configured",
+                targetGUID: SWBTargetGUID(rawValue: appID.value)
+            ),
+            name: "App-product",
+            dependencies: [],
+            toolchain: nil,
+            artifactInfo: SWBArtifactInfo(ArtifactInfo(kind: .executable, path: Path("/tmp/App.wasm")))
+        )
+
+        let aggregateArtifacts = SwiftBuildSystem.builtArtifacts(
+            from: [pluginToolTarget, appTarget],
+            pifTargetName: PIFBuilder.allExcludingTestsTargetName,
+            excludingTargetIDs: [pluginToolID]
+        )
+        #expect(aggregateArtifacts.map { $0.0 } == ["App-product"])
+        #expect(aggregateArtifacts.map { $0.1.path } == ["/tmp/App.wasm"])
+
+        let explicitProductArtifacts = SwiftBuildSystem.builtArtifacts(
+            from: [pluginToolTarget],
+            pifTargetName: PackagePIFBuilder.targetName(forProductName: "PluginTool"),
+            excludingTargetIDs: []
+        )
+        #expect(explicitProductArtifacts.map { $0.0 } == ["PluginTool"])
+        #expect(explicitProductArtifacts.map { $0.1.path } == ["/tmp/PluginTool"])
     }
 
     @Suite

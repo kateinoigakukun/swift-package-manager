@@ -282,7 +282,9 @@ internal struct PluginContextSerializer {
                 minor: package.manifest.toolsVersion.minor,
                 patch: package.manifest.toolsVersion.patch),
             dependencies: dependencies,
-            productIds: try package.products.compactMap{ try serialize(product: $0) },
+            productIds: try package.products
+                .filter { !package.implicitExecutablePluginToolProductIDs.contains($0.id) }
+                .compactMap { try serialize(product: $0) },
             targetIds: try package.modules.compactMap{ try serialize(target: $0) }))
         packagesToWireIDs[package.id] = id
         return id
@@ -327,6 +329,84 @@ internal struct PluginContextSerializer {
             targetIds: try xcodeProject.targets.compactMap{ try serialize(xcodeTarget: $0) }))
         xcodeProjectsToIds[xcodeProject] = id
         return id
+    }
+}
+
+extension ResolvedPackage {
+    fileprivate var implicitExecutablePluginToolProductIDs: Set<ResolvedProduct.ID> {
+        let mainModuleProducts = self.products.filter(\.isMainModuleProduct)
+        return Set(self.modules.filter { $0.type == .plugin }.flatMap { pluginModule in
+            pluginModule.dependencies.compactMap { dependency -> ResolvedProduct.ID? in
+                switch dependency {
+                case .module(let moduleDependency, _):
+                    guard [.executable, .snippet].contains(moduleDependency.type),
+                          let product = moduleDependency.productRepresentingDependencyOfBuildPlugin(
+                            in: mainModuleProducts
+                          ),
+                          product.underlying.isImplicit else {
+                        return nil
+                    }
+                    return product.id
+                case .product(let productDependency, _):
+                    guard [.executable, .snippet].contains(productDependency.type),
+                          productDependency.underlying.isImplicit else {
+                        return nil
+                    }
+                    return productDependency.id
+                }
+            }
+        })
+    }
+}
+
+extension ResolvedModule {
+    fileprivate func productRepresentingDependencyOfBuildPlugin(
+        in mainModuleProducts: [ResolvedProduct]
+    ) -> ResolvedProduct? {
+        func matchesDependency(_ mainModuleProduct: ResolvedProduct) -> Bool {
+            guard let mainModule = mainModuleProduct.mainModule else {
+                let onlyModule = mainModuleProduct.modules.count == 1
+                    ? mainModuleProduct.modules[mainModuleProduct.modules.startIndex]
+                    : nil
+                return mainModuleProduct.type == .executable &&
+                    onlyModule?.type == .binary &&
+                    onlyModule?.name == self.name
+            }
+            return mainModule.packageIdentity == self.packageIdentity &&
+                mainModule.name == self.name
+        }
+
+        let explicitMatches = mainModuleProducts
+            .filter { !$0.underlying.isImplicit }
+            .filter(matchesDependency)
+        let explicitMatch = explicitMatches.count == 1 ? explicitMatches[0] : nil
+        if let explicitMatch {
+            return explicitMatch
+        }
+        let matches = mainModuleProducts.filter(matchesDependency)
+        return matches.count == 1 ? matches[0] : nil
+    }
+}
+
+extension ResolvedProduct {
+    fileprivate var mainModule: ResolvedModule? {
+        switch self.type {
+        case .executable, .snippet:
+            try? self.executableModule
+        case .test:
+            self.testEntryPointModule
+        case .library, .macro, .plugin:
+            nil
+        }
+    }
+
+    fileprivate var isMainModuleProduct: Bool {
+        switch self.type {
+        case .executable, .snippet, .test:
+            true
+        case .library, .macro, .plugin:
+            false
+        }
     }
 }
 

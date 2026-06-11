@@ -798,7 +798,15 @@ extension PackagePIFProjectBuilder {
                     )
                     log(.debug, indent: 1, "Added use of plugin target '\(dependencyGUID)'")
 
-                case .library, .test, .macro, .systemModule:
+                case .macro:
+                    self.project[keyPath: sourceModuleTargetKeyPath].common.addDependency(
+                        on: moduleDependency.pifTargetGUID,
+                        platformFilters: dependencyPlatformFilters,
+                        linkProduct: false
+                    )
+                    log(.debug, indent: 1, "Added use of macro target '\(moduleDependency.pifTargetGUID)'")
+
+                case .library, .test, .systemModule:
                     self.project[keyPath: sourceModuleTargetKeyPath].common.addDependency(
                         on: moduleDependency.pifTargetGUID,
                         platformFilters: dependencyPlatformFilters,

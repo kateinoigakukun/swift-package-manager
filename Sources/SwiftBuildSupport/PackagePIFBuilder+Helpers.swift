@@ -132,6 +132,33 @@ extension PackageGraph.ResolvedProduct {
     }
 }
 
+extension PackageGraph.ResolvedPackage {
+    var implicitExecutablePluginToolProductIDs: Set<GUID> {
+        let mainModuleProducts = self.products.filter(\.isMainModuleProduct)
+        return Set(self.modules.filter { $0.type == .plugin }.flatMap { pluginModule in
+            pluginModule.dependencies.compactMap { dependency -> GUID? in
+                switch dependency {
+                case .module(let moduleDependency, _):
+                    guard [.executable, .snippet].contains(moduleDependency.type),
+                          let product = moduleDependency.productRepresentingDependencyOfBuildPlugin(
+                            in: mainModuleProducts
+                          ),
+                          product.underlying.isImplicit else {
+                        return nil
+                    }
+                    return product.pifTargetGUID
+                case .product(let productDependency, _):
+                    guard [.executable, .snippet].contains(productDependency.type),
+                          productDependency.underlying.isImplicit else {
+                        return nil
+                    }
+                    return productDependency.pifTargetGUID
+                }
+            }
+        })
+    }
+}
+
 extension PackagePIFBuilder {
     /// Helper function to consistently generate a PIF target identifier string for a module in a package.
     ///
@@ -423,6 +450,17 @@ extension PackageGraph.ResolvedModule {
     var isExecutable: Bool { self.underlying.isExecutable }
     var isBinary: Bool { self.underlying.isBinary }
     var isSourceModule: Bool { self.underlying.isSourceModule }
+
+    func hasDirectDependency(on module: PackageGraph.ResolvedModule) -> Bool {
+        self.dependencies.contains { dependency in
+            switch dependency {
+            case .module(let moduleDependency, _):
+                return moduleDependency.id == module.id
+            case .product(let productDependency, _):
+                return productDependency.modules.contains { $0.id == module.id }
+            }
+        }
+    }
 
     /// The path of the module.
     var path: AbsolutePath { self.underlying.path }
@@ -1408,4 +1446,3 @@ extension UserDefaults {
         }
     }
 }
-

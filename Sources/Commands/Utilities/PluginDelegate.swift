@@ -189,7 +189,24 @@ final class PluginDelegate: PluginInvocationDelegate {
 
         _ = try await buildSystem.getPackageGraph()
 
-        let builtArtifacts: [PluginInvocationBuildResult.BuiltArtifact] = (result?.builtArtifacts ?? []).filter { (name, _) in
+        let builtArtifacts = Self.builtArtifacts(
+            from: result?.builtArtifacts ?? [],
+            builtTestProducts: await buildSystem.builtTestProducts,
+            matching: subset
+        )
+
+        return PluginInvocationBuildResult(
+            succeeded: success,
+            logText: bufferedOutputStream.bytes.cString,
+            builtArtifacts: builtArtifacts)
+    }
+
+    package static func builtArtifacts(
+        from artifacts: [(String, PluginInvocationBuildResult.BuiltArtifact)],
+        builtTestProducts: [BuiltTestProduct],
+        matching subset: PluginInvocationBuildSubset
+    ) -> [PluginInvocationBuildResult.BuiltArtifact] {
+        let matchedArtifacts: [PluginInvocationBuildResult.BuiltArtifact] = artifacts.filter { (name, _) in
             switch subset {
             case .all:
                 return true
@@ -200,10 +217,22 @@ final class PluginDelegate: PluginInvocationDelegate {
             }
         }.map(\.1)
 
-        return PluginInvocationBuildResult(
-            succeeded: success,
-            logText: bufferedOutputStream.bytes.cString,
-            builtArtifacts: builtArtifacts)
+        guard matchedArtifacts.isEmpty else {
+            return matchedArtifacts
+        }
+
+        guard case .product(let productName) = subset else {
+            return matchedArtifacts
+        }
+
+        return builtTestProducts
+            .filter { $0.productName == productName || $0.umbrellaProductName == productName }
+            .map {
+                PluginInvocationBuildResult.BuiltArtifact(
+                    path: $0.binaryPath.pathString,
+                    kind: .executable
+                )
+            }
     }
 
     func pluginRequestedTestOperation(

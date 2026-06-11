@@ -153,6 +153,10 @@ extension PackagePIFProjectBuilder {
                 settings[.SUPPORTED_PLATFORMS] = ["$(HOST_PLATFORM)"]
             }
         } else if mainModule.type == .executable {
+            if package.implicitExecutablePluginToolProductIDs.contains(product.pifTargetGUID) {
+                settings[.SUPPORTED_PLATFORMS] = ["$(HOST_PLATFORM)"]
+            }
+
             // Setup install path for executables if it's in root of a pure Swift package.
             if pifBuilder.delegate.hostsOnlyPackages && pifBuilder.delegate.isRootPackage {
                 settings[.SKIP_INSTALL] = "NO"
@@ -419,7 +423,7 @@ extension PackagePIFProjectBuilder {
                     log(.debug, indent: 1, "Added dependency on product '\(dependencyId)'")
 
                     // Link with a testable version of the macro if appropriate.
-                    if product.type == .test {
+                    if product.type == .test && mainModule.hasDirectDependency(on: moduleDependency) {
                         self.project[keyPath: mainModuleTargetKeyPath].common.addDependency(
                             on: moduleDependency.pifTargetGUID(suffix: .testable),
                             platformFilters: packageConditions
@@ -822,6 +826,18 @@ extension PackagePIFProjectBuilder {
                     return
                 }
 
+                if moduleDependency.type == .macro {
+                    let dependencyId = moduleDependency.pifTargetGUID
+                    self.project[keyPath: libraryUmbrellaTargetKeyPath].common.addDependency(
+                        on: dependencyId,
+                        platformFilters: packageConditions
+                            .toPlatformFilter(toolsVersion: package.manifest.toolsVersion),
+                        linkProduct: false
+                    )
+                    log(.debug, indent: 1, "Added use of macro target '\(dependencyId)'")
+                    return
+                }
+
                 // If this dependency is already present in the product's module target then don't re-add it.
                 if product.modules.contains(where: { $0.name == moduleDependency.name }) { return }
 
@@ -1126,11 +1142,16 @@ extension PackagePIFProjectBuilder {
             linkProduct: true
         )
 
+        var debugSettings = settings
+        var releaseSettings = settings
+        unitTestProduct.copyLinkerSettings(to: &debugSettings, configuration: "Debug")
+        unitTestProduct.copyLinkerSettings(to: &releaseSettings, configuration: "Release")
+
         self.project[keyPath: testRunnerTargetKeyPath].common.addBuildConfig { id in
             BuildConfig(
                 id: id,
                 name: "Debug",
-                settings: settings,
+                settings: debugSettings,
                 impartedBuildSettings: impartedSettings
             )
         }
@@ -1138,7 +1159,7 @@ extension PackagePIFProjectBuilder {
             BuildConfig(
                 id: id,
                 name: "Release",
-                settings: settings,
+                settings: releaseSettings,
                 impartedBuildSettings: impartedSettings
             )
         }
@@ -1196,6 +1217,64 @@ extension PackagePIFProjectBuilder {
 }
 
 // MARK: - Helper Types
+
+extension PackagePIFBuilder.ModuleOrProduct {
+    fileprivate func copyLinkerSettings(
+        to buildSettings: inout BuildSettings,
+        configuration: String
+    ) {
+        guard let sourceBuildSettings = self.pifTarget?.common.buildConfigs
+            .first(where: { $0.name == configuration })?
+            .settings
+        else {
+            return
+        }
+
+        buildSettings.append(
+            sourceBuildSettings[.OTHER_LDFLAGS],
+            to: .OTHER_LDFLAGS
+        )
+        for platform in ProjectModel.BuildSettings.Platform.allCases {
+            buildSettings.append(
+                sourceBuildSettings[.OTHER_LDFLAGS, platform],
+                to: .OTHER_LDFLAGS,
+                platform: platform
+            )
+        }
+    }
+}
+
+extension BuildSettings {
+    fileprivate mutating func append(
+        _ values: [String]?,
+        to setting: ProjectModel.BuildSettings.MultipleValueSetting,
+        platform: ProjectModel.BuildSettings.Platform? = nil
+    ) {
+        guard let values, !values.isEmpty else {
+            return
+        }
+
+        let existingValues: [String]?
+        if let platform {
+            existingValues = self[setting, platform]
+        } else {
+            existingValues = self[setting]
+        }
+
+        let mergedValues: [String]
+        if let existingValues {
+            mergedValues = existingValues + values.filter { $0 != "$(inherited)" }
+        } else {
+            mergedValues = values
+        }
+
+        if let platform {
+            self[setting, platform] = mergedValues
+        } else {
+            self[setting] = mergedValues
+        }
+    }
+}
 
 private struct PackageRegistrySignature: Encodable {
     enum Source: Encodable {
